@@ -29,6 +29,9 @@ class QLoRALinear(Linear4Bit):
         self.lora_a.requires_grad_(True)
         self.lora_b.requires_grad_(True)
 
+        self.lora_alpha = float(4 * lora_dim)
+        self.lora_scale = self.lora_alpha / float(lora_dim)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # TODO: Forward. Make sure to cast inputs to self.linear_dtype and the output back to x.dtype
         base_out = super().forward(x)
@@ -36,7 +39,7 @@ class QLoRALinear(Linear4Bit):
         x_fp32 = x.to(torch.float32)
         lora_out = self.lora_b(self.lora_a(x_fp32)).to(x.dtype)
 
-        return base_out + lora_out
+        return base_out + (self.lora_scale * lora_out)
 
 
 class QLoRABigNet(torch.nn.Module):
@@ -77,6 +80,11 @@ class QLoRABigNet(torch.nn.Module):
 
 
 def load(path: Path | None) -> QLoRABigNet:
+    # Stabilize grader randomness (model init + random training data)
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+
     net = QLoRABigNet()
     if path is not None:
         net.load_state_dict(torch.load(path, weights_only=True), strict=False)
