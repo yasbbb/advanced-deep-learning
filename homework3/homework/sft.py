@@ -45,11 +45,16 @@ def tokenize(tokenizer, question: str, answer: str):
     return full
 
 
-def format_example(prompt: str, answer: str) -> dict[str, str]:
+def format_example(prompt: str, answer: float) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
     """
-    raise NotImplementedError()
+    # Round to 3 decimal places to keep it clean for the LLM
+    rounded = round(answer, 3)
+    return {
+        "question": prompt,
+        "answer": f"<answer>{rounded}</answer>",
+    }
 
 
 class TokenizedDataset:
@@ -75,10 +80,64 @@ class TokenizedDataset:
 
 
 def train_model(
-    output_dir: str,
+    output_dir: str = "homework/sft_model",
     **kwargs,
 ):
-    raise NotImplementedError()
+    from pathlib import Path
+    from peft import LoraConfig, get_peft_model
+    from transformers import Trainer, TrainingArguments
+
+    # Load base model
+    llm = BaseLLM()
+
+    # LoRA config — keep adapter small (under 20MB)
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=64,
+        target_modules="all-linear",
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+
+    llm.model = get_peft_model(llm.model, lora_config)
+    llm.model.enable_input_require_grads()
+    llm.model.print_trainable_parameters()
+
+    # Load datasets
+    train_data = TokenizedDataset(llm.tokenizer, Dataset("train"), format_example)
+    valid_data = TokenizedDataset(llm.tokenizer, Dataset("valid"), format_example)
+
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        logging_dir=output_dir,
+        report_to="tensorboard",
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
+        per_device_eval_batch_size=32,
+        learning_rate=2e-4,
+        gradient_checkpointing=True,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+    )
+
+    trainer = Trainer(
+        model=llm.model,
+        args=training_args,
+        train_dataset=train_data,
+        eval_dataset=valid_data,
+    )
+
+    trainer.train()
+
+    # Save final LoRA adapter to the correct directory
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    trainer.save_model(output_dir)
+    print(f"Model saved to {output_dir}")
+
     test_model(output_dir)
 
 

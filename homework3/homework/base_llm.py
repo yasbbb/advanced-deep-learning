@@ -105,7 +105,47 @@ class BaseLLM:
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
             ]
 
-        raise NotImplementedError()
+        # Left-pad so all sequences are aligned on the right for generation
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Tokenize
+        inputs = self.tokenizer(prompts, return_tensors="pt", padding=True).to(device)
+        input_length = inputs["input_ids"].shape[1]
+
+        # Generation kwargs
+        gen_kwargs = dict(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=200,
+            eos_token_id=self.tokenizer.eos_token_id,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+        if temperature > 0:
+            gen_kwargs["do_sample"] = True
+            gen_kwargs["temperature"] = temperature
+        else:
+            gen_kwargs["do_sample"] = False
+
+        if num_return_sequences is not None:
+            gen_kwargs["num_return_sequences"] = num_return_sequences
+
+        with torch.no_grad():
+            outputs = self.model.generate(**gen_kwargs)
+
+        # Decode only newly generated tokens
+        new_tokens = outputs[:, input_length:]
+        decoded = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+
+        # Reshape into list[list[str]] if num_return_sequences was set
+        if num_return_sequences is not None:
+            decoded = [
+                decoded[i * num_return_sequences : (i + 1) * num_return_sequences]
+                for i in range(len(prompts))
+            ]
+
+        return decoded
 
     def answer(self, *questions) -> list[float]:
         """
